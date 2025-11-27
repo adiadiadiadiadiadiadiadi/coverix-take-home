@@ -13,22 +13,20 @@ export interface SessionChatProps {
   inputRef: React.RefObject<HTMLInputElement>;
   message: string;
   setMessage: React.Dispatch<React.SetStateAction<string>>;
-  isWaitingForBot: boolean;
-  handleSend: () => void;
 }
 
 const SessionChat: React.FC<SessionChatProps> = ({
   inputRef,
   message,
-  setMessage,
-  isWaitingForBot,
-  handleSend: _handleSend,
+  setMessage
 }) => {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(true);
   const [messagesList, setMessagesList] = useState<ChatMessage[]>([]);
   const [showTyping, setShowTyping] = useState(false);
   const isInitializingRef = useRef(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesAreaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -83,7 +81,6 @@ const SessionChat: React.FC<SessionChatProps> = ({
           }
         }
       } catch (error) {
-        console.error('Error initializing session:', error);
       } finally {
         if (isMounted) {
           setShowTyping(false);
@@ -101,14 +98,6 @@ const SessionChat: React.FC<SessionChatProps> = ({
     };
   }, [sessionId]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (isWaitingForResponse || showTyping) {
-      e.preventDefault();
-      return;
-    }
-    setMessage(e.target.value);
-  };
-
   const safeMessageContent = (msg: ChatMessage) => {
     if (msg.sender !== 'bot') return msg.content;
 
@@ -117,14 +106,43 @@ const SessionChat: React.FC<SessionChatProps> = ({
       if (parsed && typeof parsed === 'object') {
         return parsed.content ?? msg.content;
       }
-    } catch (_) {
-      // fall back to raw message content if JSON parse fails
-    }
+    } catch (_) {}
     return msg.content;
   };
 
+  const isComplete = React.useMemo(() => {
+    if (messagesList.length === 0) return false;
+    const lastMessage = messagesList[messagesList.length - 1];
+    if (lastMessage.sender === 'bot') {
+      const content = safeMessageContent(lastMessage).toLowerCase();
+      return content.includes('connecting you to an agent') || 
+             content.includes("connecting you to a human agent") ||
+             content.includes("i'm connecting you to") ||
+             content.includes("connecting you to") ||
+             content.includes("connect you to") ||
+             content.includes("connect to an agent") ||
+             content.includes("connect to a human");
+    }
+    return false;
+  }, [messagesList]);
+
+  useEffect(() => {
+    if (isComplete) {
+      setMessage('');
+    }
+  }, [isComplete, setMessage]);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isWaitingForResponse || showTyping || isComplete) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    setMessage(e.target.value);
+  };
+
   const handleSend = async () => {
-    if (!message.trim() || isWaitingForResponse || showTyping || !sessionId) {
+    if (!message.trim() || isWaitingForResponse || showTyping || !sessionId || isComplete) {
       return;
     }
 
@@ -166,7 +184,6 @@ const SessionChat: React.FC<SessionChatProps> = ({
       const botMessage = await botResponseRes.json();
       setMessagesList((prev) => [...prev, botMessage]);
     } catch (error) {
-      console.error('Error sending message:', error);
       setMessage(messageContent);
       alert('Failed to send message. Please try again.');
     } finally {
@@ -176,7 +193,7 @@ const SessionChat: React.FC<SessionChatProps> = ({
   };
 
   const handleInputKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (isWaitingForResponse || showTyping) {
+    if (isWaitingForResponse || showTyping || isComplete) {
       e.preventDefault();
       e.stopPropagation();
       return;
@@ -186,46 +203,79 @@ const SessionChat: React.FC<SessionChatProps> = ({
     }
   };
 
+  const isInputDisabled = isWaitingForResponse || showTyping || isComplete;
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messagesList, showTyping]);
+
+  // Focus input when AI is done speaking
+  useEffect(() => {
+    if (!showTyping && !isWaitingForResponse && !isComplete && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [showTyping, isWaitingForResponse, isComplete]);
+
   return (
     <div className="chat-container">
-      <div className="messages-area">
-        {messagesList.map((msg) => (
-          <div
-            key={msg.message_id}
-            className={`message-row ${msg.sender === 'bot' ? 'bot' : 'user'}`}
-          >
-            {safeMessageContent(msg)}
-          </div>
-        ))}
+      <div className="messages-area" ref={messagesAreaRef}>
+        {messagesList.map((msg) => {
+          const content = safeMessageContent(msg);
+          return (
+            <div
+              key={msg.message_id}
+              className={`message-row ${msg.sender === 'bot' ? 'bot' : 'user'}`}
+            >
+              {content.split('\n').map((line: string, index: number, array: string[]) => (
+                <React.Fragment key={index}>
+                  {line}
+                  {index < array.length - 1 && <br />}
+                </React.Fragment>
+              ))}
+            </div>
+          );
+        })}
         {showTyping && (
           <div className="message-row bot typing-row">
             <TypingIndicator />
           </div>
         )}
+        <div ref={messagesEndRef} />
       </div>
       <div className="input-container">
         <input
           ref={inputRef}
           type="text"
           className="text-input"
-          placeholder={isWaitingForResponse || showTyping ? 'Waiting for response...' : 'Type a message...'}
-          value={isWaitingForResponse || showTyping ? '' : message}
+          placeholder={isInputDisabled ? (isComplete ? 'Connected to agent - conversation complete' : 'Waiting for response...') : 'Type a message...'}
+          value={isInputDisabled ? '' : message}
           onChange={handleInputChange}
           onKeyPress={handleInputKeyPress}
           onKeyDown={(e) => {
-            if (isWaitingForResponse || showTyping) {
+            if (isInputDisabled) {
+              e.preventDefault();
+              e.stopPropagation();
+              return false;
+            }
+          }}
+          onPaste={(e) => {
+            if (isInputDisabled) {
               e.preventDefault();
               e.stopPropagation();
             }
           }}
-          disabled={isWaitingForResponse || showTyping}
-          readOnly={isWaitingForResponse || showTyping}
-          tabIndex={isWaitingForResponse || showTyping ? -1 : 0}
+          disabled={isInputDisabled}
+          readOnly={isInputDisabled}
+          tabIndex={isInputDisabled ? -1 : 0}
+          style={{ cursor: isInputDisabled ? 'not-allowed' : 'text' }}
         />
         <button
           className="send-button"
           onClick={handleSend}
-          disabled={isWaitingForResponse || showTyping || !message.trim()}
+          disabled={isInputDisabled || !message.trim()}
         >
           Send
         </button>

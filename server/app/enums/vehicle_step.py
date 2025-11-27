@@ -2,7 +2,7 @@ from enum import Enum
 
 class VehicleStep(str, Enum):
     # sub steps of vehicle
-    vin = "vin"
+    vin_or_year_make_body = "vin_or_year_make_body"
     use = "use"
     blind_spot = "blind_spot"
 
