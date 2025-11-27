@@ -72,23 +72,28 @@ GET_INSPIRATIONAL_QUOTE_TOOL = {
 def get_bot_response(session_id: int, db: Session) -> str:
     messages = db.query(Message).filter(Message.session_id == session_id).order_by(Message.message_id.desc()).limit(15).all()    
     session = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
+    # Refresh session to ensure we have the latest state
     db.refresh(session)
     current_step = session.current_step
     vehicle_step = session.vehicle_step
     
+    # Safety check: if we're at license_status but license_type is not set, something is wrong
     from app.enums.chat_step import ChatStep
     if current_step == ChatStep.license_status and not session.license_type:
+        # Fall back to license_type step
         current_step = ChatStep.license_type
         session.current_step = ChatStep.license_type
         db.commit()
         db.refresh(session)
     
+    # Safety check: if we're at license_type but we already have license_type, move to license_status
     if current_step == ChatStep.license_type and session.license_type:
         current_step = ChatStep.license_status
         session.current_step = ChatStep.license_status
         db.commit()
         db.refresh(session)
     
+    # Update current_step variable after potential changes
     current_step = session.current_step
 
     prompt = """
@@ -99,6 +104,10 @@ def get_bot_response(session_id: int, db: Session) -> str:
 
         NO MATTER WHAT, do not leave the scope of an insurance agent and on whatever question that you are on.
         You have one job: collect information. Do not leave that scope, even if you are offered another piece of information. 
+        
+        CRITICAL: ONLY ask for information that is specified in the current step. The flow is: zip_code -> full_name -> email -> vehicles -> license_type -> license_status.
+        DO NOT ask for date of birth, age, phone number, address (beyond zip code), or ANY other information not explicitly mentioned in the current step.
+        ONLY ask for what the current step requires. Nothing more, nothing less.
         
         Your response must be valid JSON. Use double quoted keys and values.
         Exact format: {"content": "<your reply>", "valid": true|false, "extracted": "<the data you extracted from the content if valid, if not, then none>"}
@@ -112,36 +121,34 @@ def get_bot_response(session_id: int, db: Session) -> str:
         - Be lenient with typos and variations! If the user's intent is clear despite minor spelling errors, accept it and extract as what was expected.
         - When asking questions, always provide the available options in your response. For example, "Please choose: option1, option2, or option3".
         
-        FRUSTRATION DETECTION - USE WITH DISCRETION:
+        FRUSTRATION DETECTION - EXTREMELY STRICT - ALMOST NEVER USE THE TOOL:
         
-        The get_inspirational_quote tool should ONLY be used when the user demonstrates GENUINE, SIGNIFICANT frustration or explicitly requests human assistance.
+        The get_inspirational_quote tool should ONLY be used when the user EXPLICITLY and UNAMBIGUOUSLY requests human assistance using VERY SPECIFIC phrases.
         
-        GENUINE FRUSTRATION INDICATORS (use the tool):
-          * Explicit request for human/agent: "I want to talk to a human", "connect me to an agent", "I need to speak to someone"
-          * Strong emotional expressions: "I'm very frustrated", "this is extremely frustrating", "I'm really angry", "I'm very upset"
-          * Clear intent to stop/discontinue: "I don't want to continue", "I'm done with this", "forget it", "cancel everything"
-          * Profanity or harsh language directed at the process: "this is stupid", "this sucks", "this is ridiculous"
-          * Multiple expressions of dissatisfaction combined with refusal to continue
+        ONLY use the tool if the user message contains ONE of these EXACT phrases (word-for-word or very close):
+          1. "I want to talk to a human" or "I want to speak to a human" or "I want to talk to a person" or "I want to speak to a person"
+          2. "connect me to an agent" or "connect me to a human" or "I need to speak to an agent" or "I need to speak to a human"
+          3. "I'm done" or "I'm finished" or "stop this" or "cancel this" (ONLY if it's a complete sentence, not part of answering a question)
         
-        NOT FRUSTRATION - DO NOT use the tool for:
-          * Normal information provision: If you asked for their name and they say "John Smith" - that's a NORMAL answer, NOT frustration
-          * If you asked for email and they provide an email - that's NORMAL, NOT frustration
-          * If you asked for zip code and they provide a zip code - that's NORMAL, NOT frustration
-          * Light expressions: "im pretty frustrated" without context of wanting to stop is NOT enough - they're still engaging
-          * Minor annoyance: "this is annoying" by itself is NOT enough - they need to express intent to stop or request human help
-          * Clarifying questions or confusion: "what do you mean?" or "I'm not sure" - these are normal, NOT frustration
-          * Repeating answers: If they say "yes" twice, that's normal, NOT frustration
-          * Question marks in responses: "personal?" is still a valid answer, NOT frustration
-          * Any response that looks like requested information (names, emails, zip codes, vehicle info, license types, etc.)
+        ABSOLUTELY DO NOT use the tool for:
+          * ANY vehicle information (VIN, year, make, model, body type, "2022 toyota sedan", etc.) - these are ANSWERS, NOT frustration
+          * ANY names, emails, zip codes, numbers, yes/no responses
+          * ANY answers to your questions (personal/commercial, valid/suspended, commuting days, miles, etc.)
+          * ANY message that looks like it's providing information you asked for
+          * ANY message that could be an answer to your current question
+          * Typos, misspellings, or unclear responses - these are still answers
+          * Questions like "what do you mean?" - these are clarifying questions, NOT frustration
+          * ANYTHING that could reasonably be interpreted as answering your question
         
-        CRITICAL JUDGMENT RULE:
-        - If the user's message could reasonably be an answer to your question (name, email, zip, yes/no, personal/commercial, valid/suspended, vehicle info), 
-          it is NOT frustration - extract the information normally.
-        - Only use the tool if the user's PRIMARY intent is to express strong frustration AND either request human help OR stop the process entirely.
-        - Light frustration while still engaging ("im pretty frustrated" but then continues answering) is NOT enough - continue collecting information.
-        - When in doubt, DO NOT use the tool. Continue with normal information collection.
+        CRITICAL RULES - READ CAREFULLY:
+        - If the user is providing ANY information (vehicle details, names, numbers, etc.), they are ANSWERING your question, NOT asking for a human
+        - Vehicle information like "2022 toyota sedan" is an ANSWER to "Please provide VIN or Year/Make/Body Type" - DO NOT use the tool
+        - If there's ANY doubt, DO NOT use the tool - just treat it as an answer to your question
+        - The tool should ONLY be used when the user EXPLICITLY says they want to talk to a human agent
+        - When in doubt, ALWAYS assume they're answering your question
+        - It's MUCH better to miss a frustration case than to incorrectly treat normal answers as frustration
         
-        After using the tool, acknowledge their frustration, share the inspirational quote, and let them know you're connecting them to an agent.
+        After using the tool, acknowledge their request, share the inspirational quote, and let them know you're connecting them to an agent.
         Set valid: true, extracted: "connect_to_agent" when this happens.
 
         Past 15 Messages (in chronological order, oldest first):
@@ -162,13 +169,23 @@ def get_bot_response(session_id: int, db: Session) -> str:
         case "zip_code":
             prompt += """
             Current step: ZIP CODE. Validate the LAST user message. if it's a valid 5-digit zip code, 
-            set valid: true and extracted: just the zip code (e.g., '95014'). If valid, acknowledge and ask for their full name. 
+            set valid: true and extracted: just the zip code (e.g., '95014'). 
+            
+            CRITICAL: After collecting the zip code, you MUST ask for their FULL NAME. 
+            DO NOT ask for date of birth, age, phone number, or ANY other information. 
+            The ONLY next step is full name. Ask: "Could you please share your full name?"
+            
             If invalid, set valid: false and ask for a valid 5-digit zip code.
             """
         case "full_name":
             prompt += """
             Current step: FULL NAME. Validate the LAST user message. if it contains a name (first and last name), 
-            set valid: true and extracted: the full name. If valid, acknowledge and ask for their email address. 
+            set valid: true and extracted: the full name. 
+            
+            CRITICAL: After collecting the full name, you MUST ask for their EMAIL ADDRESS. 
+            DO NOT ask for date of birth, age, phone number, or ANY other information. 
+            The ONLY next step is email address. Ask: "Could you please provide your email address?"
+            
             If invalid, set valid: false and ask for their full name.
             """
         case "email":
@@ -198,7 +215,9 @@ def get_bot_response(session_id: int, db: Session) -> str:
             REMEMBER: We are past the vehicle step. DO NOT mention vehicles, VIN, or vehicle information in your response.
             DO NOT backtrack to vehicle questions."""
         case "license_status":
+            # Check if license_status is already set - if so, generate completion message
             if session.license_status:
+                # License status is already collected - generate completion message
                 session_summary_parts = []
                 if session.zip_code:
                     session_summary_parts.append(f"Zip Code: {session.zip_code}")
@@ -240,6 +259,8 @@ def get_bot_response(session_id: int, db: Session) -> str:
                 Format the summary section with each field on its own line (Zip Code on one line, Full Name on the next line, etc.)
                 """
             else:
+                # License status not yet collected - ask for it
+                # Get session summary to include in prompt
                 session_summary_parts = []
                 if session.zip_code:
                     session_summary_parts.append(f"Zip Code: {session.zip_code}")
@@ -249,6 +270,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
                     session_summary_parts.append(f"Email: {session.email}")
                 if session.license_type:
                     session_summary_parts.append(f"License Type: {session.license_type.value}")
+                # License status will be added after validation
                 
                 from app.models.vehicle import Vehicle
                 vehicles = db.query(Vehicle).filter(Vehicle.session_id == session_id).all()
@@ -257,6 +279,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
                 
                 session_summary = "\n".join(session_summary_parts) if session_summary_parts else "No additional information collected."
                 
+                # Build what's already been collected
                 collected_info = []
                 if session.zip_code:
                     collected_info.append(f"✓ Zip Code: {session.zip_code}")
@@ -317,95 +340,124 @@ def get_bot_response(session_id: int, db: Session) -> str:
                 match vehicle_step:
                     case "vin_or_year_make_body":
                         prompt += """
-                        Current step: VEHICLE IDENTIFICATION. You need to ask the user for their vehicle information.
-                        The user can provide either: (1) A VIN (exactly 17 characters, alphanumeric), OR (2) Year, Make, and Body Type (e.g., '2020 Toyota Sedan' or '2019 Ford Truck').
-                        
-                        CRITICAL - FIRST MESSAGE: If you have NOT asked for vehicle information yet in this conversation, you MUST ask: 'Please provide either a VIN (17 characters) or Year, Make, and Body Type (e.g., 2020 Toyota Sedan).'
-                        
-                        CRITICAL RULES - NO EXCEPTIONS:
-                        - DO NOT say "I will validate" or "hold on a moment" or "please wait". Validate silently and immediately proceed.
-                        - If the user provides a VIN (exactly 17 characters, alphanumeric), you MUST use the validate_vin tool to check if it's valid. After validation, immediately proceed without mentioning validation.
-                        - If the user provides Year/Make/Body Type (like "2019 Ford Sedan" or "2020 Toyota SUV"), you MUST use the validate_vehicle_info tool. After validation, immediately proceed without mentioning validation.
-                        - ABSOLUTE REQUIREMENT: Body Type is MANDATORY and CANNOT be omitted, skipped, or left empty.
-                        - BEFORE calling validate_vehicle_info tool: Check if the user provided a body type. If they only provided "Year Make" (like "2020 Toyota" or "2019 Ford") without a body type, DO NOT call the tool. Instead, set valid: false, extracted: "none", and ask: "Please provide Year, Make, AND Body Type (e.g., '2020 Toyota Sedan' or '2019 Ford Truck'). Body type is required."
-                        - IMPORTANT: Extract the year (as integer), make (as string), and body_type (as string, REQUIRED - e.g., "Sedan", "SUV", "Truck", "Coupe", "Hatchback", "Wagon").
-                          For "2019 Ford Sedan", extract year=2019, make="Ford", body_type="Sedan".
-                          For "2020 Toyota SUV", extract year=2020, make="Toyota", body_type="SUV".
-                          If user says "2020 Toyota" without body type, set valid: false and ask for body type.
-                        - When calling validate_vehicle_info tool, you MUST provide all three: year, make, AND body_type. The tool will reject if body_type is missing.
-                        - If you use a tool and the vehicle info is invalid, set valid: false and immediately inform the user why it's invalid (do not say "I validated" or "I checked" - just state the error directly).
-                        - If you use a tool and the vehicle info is valid, set valid: true and extracted: the VIN (if VIN was provided) or 'year make body_type' format (if year/make/body_type was provided, e.g., '2019 Ford Sedan').
-                        - If valid, acknowledge briefly (e.g., "Thank you for providing the vehicle details") and immediately ask for vehicle use (commuting, commercial, farming, or business). DO NOT mention validation or checking.
-                        - If invalid, set valid: false and ask for either a valid VIN or Year, Make, and Body Type (emphasize that all three are required).
+                        Current step: VEHICLE IDENTIFICATION. This is the FIRST question after the user agrees to add a vehicle.
+                        You MUST ask: 'Please provide either a VIN (17 characters) or Year, Make, and Body Type (e.g., 2020 Toyota Sedan).'
+                        DO NOT skip this step. DO NOT ask about vehicle use, blind spot, or any other details yet.
+                        Simply ask for the vehicle information and wait for the user's response.
+                        Set valid: true and extracted: the user's response (VIN or Year Make Body Type format).
                         """
                     case "use":
-                        prompt += "Current step: VEHICLE USE. The available options are: commuting, commercial, farming, or business. In your response, always show these options: 'Please choose the vehicle use: commuting, commercial, farming, or business.' Validate the LAST user message - be lenient with typos. If it matches one of the options (accounting for typos), set valid: true and extracted: exactly one of these values (commuting, commercial, farming, or business) - normalize any typos to the correct value. If valid, acknowledge and ask for the next step based on use type: if commuting, ask ONLY about days per week (do NOT ask about miles yet - that comes next). If commercial/farming/business, ask for annual mileage. If invalid, set valid: false and ask again with the options clearly shown."
-                    case "commuting_days":
-                        prompt += "Current step: COMMUTING DAYS PER WEEK. This is the FIRST of two separate questions about commuting. Ask ONLY about how many days per week they commute. Do NOT ask about miles yet. Validate the LAST user message - if it's a number between 1-7, set valid: true and extracted: the number. If valid, acknowledge and then ask the SECOND question: 'How many one-way miles is your commute to work or school?' If invalid, set valid: false and ask for a number of days per week between 1-7."
-                    case "commuting_miles":
-                        prompt += "Current step: COMMUTING MILES (ONE-WAY). This is the SECOND question about commuting. Ask ONLY about one-way miles to work or school. Do NOT ask about days per week (that was already asked). Validate the LAST user message - if it's a positive number, set valid: true and extracted: the number. If valid, acknowledge and ask about blind spot warning (yes/no). If invalid, set valid: false and ask for a valid number of one-way miles."
-                    case "annual_mileage":
-                        prompt += "Current step: ANNUAL MILEAGE. Validate the LAST user message - if it's a positive number, set valid: true and extracted: the number. If valid, acknowledge and ask about blind spot warning (yes/no). If invalid, set valid: false and ask for a valid number."
+                        prompt += """
+                        Current step: VEHICLE USE. 
+                        You MUST ask: 'Please choose the vehicle use: commuting, commercial, farming, or business.'
+                        Simply ask the question and wait for the user's response.
+                        Set valid: true and extracted: the user's response (commuting, commercial, farming, or business).
+                        """
                     case "blind_spot":
                         prompt += """
-                        Current step: BLIND SPOT WARNING - FINAL STEP FOR THIS VEHICLE.
-                        
-                        CRITICAL: Look at the conversation history. If you have already asked "Does your vehicle have blind spot warning?" and the user has answered (yes/no/any variation), then:
-                        - Do NOT ask the blind spot question again
-                        - Acknowledge their previous answer
-                        - Immediately ask: 'Would you like to add another vehicle? Please respond with yes or no.'
-                        - Set valid: true and extracted: 'true' or 'false' based on their previous answer
-                        
-                        If you have NOT asked this question yet, ask: 'Does your vehicle have blind spot warning? Please respond with yes or no.'
-                        Do NOT mention insurance coverage or adding features. You are simply asking if the vehicle has this feature.
-                        
-                        Validate the LAST user message - be VERY lenient with variations and typos.
-                        - ANY affirmative response (yes, y, ye, yeah, yea, sure, ok, okay, true, correct, absolutely, definitely, yep, yeh, yup, k, sure thing, affirmative, of course) should be considered valid.
-                          Set valid: true and extracted: 'true' for ANY affirmative response.
-                        - ANY negative response (no, n, nah, nope, false, incorrect, negative, not really) should be considered valid.
-                          Set valid: true and extracted: 'false' for ANY negative response.
-                        
-                        If valid (whether from current answer or previous answer), acknowledge briefly and ask: 'Would you like to add another vehicle? Please respond with yes or no.'
-                        Only set valid: false if the response is completely unclear or unrelated.
+                        Current step: BLIND SPOT WARNING.
+                        You MUST ask: 'Does your vehicle have blind spot warning? Please respond with yes or no.'
+                        Simply ask the question and wait for the user's response.
+                        Set valid: true and extracted: the user's response (yes or no).
+                        """
+                    case "commuting_days":
+                        prompt += """
+                        Current step: COMMUTING DAYS PER WEEK.
+                        You MUST ask: 'How many days per week do you commute? Please provide a number between 1 and 7.'
+                        Simply ask the question and wait for the user's response.
+                        Set valid: true and extracted: the user's response (number between 1-7).
+                        """
+                    case "commuting_miles":
+                        prompt += """
+                        Current step: ONE-WAY MILES TO WORK/SCHOOL. This is a REQUIRED question that MUST be asked.
+                        You MUST ask this question NOW: 'How many one-way miles is your commute to work or school? Please provide a positive number.'
+                        DO NOT skip this question. DO NOT ask about adding another vehicle yet. You MUST ask for one-way miles first.
+                        Simply ask the question and wait for the user's response.
+                        Set valid: true and extracted: the user's response (positive number).
+                        """
+                    case "annual_mileage":
+                        prompt += """
+                        Current step: ANNUAL MILEAGE.
+                        You MUST ask: 'What is the annual mileage for this vehicle? Please provide a positive number.'
+                        Simply ask the question and wait for the user's response.
+                        Set valid: true and extracted: the user's response (positive number).
                         """
             else:
-                prompt += """
-                Current step: ADD VEHICLE QUESTION. Ask if they want to add a vehicle. Users can add multiple vehicles.
+                from app.models.vehicle import Vehicle
+                existing_vehicles = db.query(Vehicle).filter(Vehicle.session_id == session_id).count()
                 
-                CRITICAL: Check the conversation history CAREFULLY. If the user has already answered "no" to adding a vehicle AND you have already asked about license type, then we are PAST the vehicle step. 
-                DO NOT ask about vehicles again if we're past that step. The flow is: vehicles -> license_type -> license_status.
-                If you see license type questions in the conversation, we are already past vehicles. DO NOT regress backwards.
-                
-                CRITICAL: Check the conversation history CAREFULLY. Count how many times you asked "Would you like to add a vehicle?" or any variation. 
-                If the user has ALREADY answered "yes" to adding a vehicle (anywhere in the conversation), then:
-                - Do NOT ask the question again under ANY circumstances
-                - Do NOT repeat the question
-                - Acknowledge their previous "yes" answer if this is the first time you're seeing it
-                - Immediately ask for vehicle information: 'Please provide either a VIN (17 characters) or Year, Make, and Body Type (e.g., 2020 Toyota Sedan).'
-                - Set valid: true and extracted: 'true'
-                
-                If you have already asked and they answered "no" (or any negative), then:
-                - Do NOT ask the question again
-                - Do NOT repeat the question
-                - Acknowledge their answer
-                - Immediately ask for license type: 'Please choose your license type: personal, commercial, or foreign.'
-                - Set valid: true and extracted: 'false'
-                
-                If you have NOT asked this question yet AND the user has NOT answered it, ask: 'Would you like to add a vehicle? Please respond with yes or no.'
-                
-                REMEMBER: If you see "yes" anywhere in the conversation history about vehicles, treat it as already answered and proceed to asking for vehicle information.
-                
-                Validate the LAST user message. Be VERY lenient with variations and typos.
-                - ANY affirmative response (yes, y, ye, yeah, yea, sure, ok, okay, true, correct, absolutely, 
-                  definitely, yep, yeh, yup, k, sure thing, affirmative, of course) should be considered valid.
-                  Set valid: true and extracted: 'true' (NOT 'yes', extract as 'true').
-                - ANY negative response (no, n, nah, nope, false, incorrect, negative, not really) should be considered valid.
-                  Set valid: true and extracted: 'false' (NOT 'no', extract as 'false').
-                
-                If valid, acknowledge and proceed (if extracted is 'true', ask for VIN or Year/Make/Body Type; 
-                if extracted is 'false', ask for license type). 
-                Only set valid: false if the response is completely unclear or unrelated.
-                """
+                if existing_vehicles > 0:
+                    prompt += """
+                    Current step: ADD ANOTHER VEHICLE QUESTION. The user has already added at least one vehicle. Ask if they want to add another vehicle.
+                    
+                    CRITICAL: Check the conversation history CAREFULLY. If the user has already answered "no" to adding another vehicle, then:
+                    - Do NOT ask the question again
+                    - Do NOT repeat the question
+                    - Acknowledge their answer
+                    - Immediately ask for license type: 'Please choose your license type: personal, commercial, or foreign.'
+                    - Set valid: true and extracted: 'false'
+                    
+                    If the user has ALREADY answered "yes" to adding another vehicle (anywhere in the conversation), then:
+                    - Do NOT ask the question again under ANY circumstances
+                    - Do NOT repeat the question
+                    - Acknowledge their previous "yes" answer if this is the first time you're seeing it
+                    - Immediately ask for vehicle information: 'Please provide either a VIN (17 characters) or Year, Make, and Body Type (e.g., 2020 Toyota Sedan).'
+                    - Set valid: true and extracted: 'true'
+                    
+                    If you have NOT asked this question yet AND the user has NOT answered it, ask: 'Would you like to add another vehicle? Please respond with yes or no.'
+                    
+                    REMEMBER: If you see "yes" anywhere in the conversation history about adding another vehicle, treat it as already answered and proceed to asking for vehicle information.
+                    
+                    Validate the LAST user message. Be VERY lenient with variations and typos.
+                    - ANY affirmative response (yes, y, ye, yeah, yea, sure, ok, okay, true, correct, absolutely, 
+                      definitely, yep, yeh, yup, k, sure thing, affirmative, of course) should be considered valid.
+                      Set valid: true and extracted: 'true' (NOT 'yes', extract as 'true').
+                    - ANY negative response (no, n, nah, nope, false, incorrect, negative, not really) should be considered valid.
+                      Set valid: true and extracted: 'false' (NOT 'no', extract as 'false').
+                    
+                    If valid, acknowledge and proceed (if extracted is 'true', ask for VIN or Year/Make/Body Type; 
+                    if extracted is 'false', ask for license type). 
+                    Only set valid: false if the response is completely unclear or unrelated.
+                    """
+                else:
+                    prompt += """
+                    Current step: ADD VEHICLE QUESTION. Ask if they want to add a vehicle. Users can add multiple vehicles. Do not yet inquire about what type of vehicle they want to add. DON'T ASK ABOUT DETAILS IN THIS STEP. JUST YES/NO.
+                    
+                    CRITICAL: Check the conversation history CAREFULLY. If the user has already answered "no" to adding a vehicle AND you have already asked about license type, then we are PAST the vehicle step. 
+                    DO NOT ask about vehicles again if we're past that step. The flow is: vehicles -> license_type -> license_status.
+                    If you see license type questions in the conversation, we are already past vehicles. DO NOT regress backwards.
+                    
+                    CRITICAL: Check the conversation history CAREFULLY. Count how many times you asked "Would you like to add a vehicle?" or any variation. 
+                    If the user has ALREADY answered "yes" to adding a vehicle (anywhere in the conversation), then:
+                    - Do NOT ask the question again under ANY circumstances
+                    - Do NOT repeat the question
+                    - Acknowledge their previous "yes" answer if this is the first time you're seeing it
+                    - Immediately ask for vehicle information: 'Please provide either a VIN (17 characters) or Year, Make, and Body Type (e.g., 2020 Toyota Sedan).'
+                    - Set valid: true and extracted: 'true'
+                    
+                    If you have already asked and they answered "no" (or any negative), then:
+                    - Do NOT ask the question again
+                    - Do NOT repeat the question
+                    - Acknowledge their answer
+                    - Immediately ask for license type: 'Please choose your license type: personal, commercial, or foreign.'
+                    - Set valid: true and extracted: 'false'
+                    
+                    If you have NOT asked this question yet AND the user has NOT answered it, ask: 'Would you like to add a vehicle? Please respond with yes or no.'
+                    
+                    REMEMBER: If you see "yes" anywhere in the conversation history about vehicles, treat it as already answered and proceed to asking for vehicle information.
+                    
+                    Validate the LAST user message. Be VERY lenient with variations and typos.
+                    - ANY affirmative response (yes, y, ye, yeah, yea, sure, ok, okay, true, correct, absolutely, 
+                      definitely, yep, yeh, yup, k, sure thing, affirmative, of course) should be considered valid.
+                      Set valid: true and extracted: 'true' (NOT 'yes', extract as 'true').
+                    - ANY negative response (no, n, nah, nope, false, incorrect, negative, not really) should be considered valid.
+                      Set valid: true and extracted: 'false' (NOT 'no', extract as 'false').
+                    
+                    If valid, acknowledge and proceed (if extracted is 'true', ask for VIN or Year/Make/Body Type; 
+                    if extracted is 'false', ask for license type). 
+                    Only set valid: false if the response is completely unclear or unrelated.
+                    """
+
 
     messages_list = [{"role": "system", "content": prompt}]
     tools = []
@@ -415,7 +467,6 @@ def get_bot_response(session_id: int, db: Session) -> str:
         tools.append(VEHICLE_INFO_VALIDATION_TOOL)
     
     tools = tools if tools else None
-    
     completion = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=messages_list,
@@ -462,6 +513,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
                             }
                         else:
                             validation_result = validate_vin(vin)
+                        
                         messages_list.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
@@ -516,6 +568,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
                         if response.status_code == 200:
                             quotes_data = response.json()
                             if quotes_data and len(quotes_data) > 0:
+                                # Get the first quote
                                 quote = quotes_data[0]
                                 quote_text = quote.get("q", "")
                                 quote_author = quote.get("a", "Unknown")
@@ -539,6 +592,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
                                 "note": "API error, fallback quote used"
                             }
                         
+                        # Add tool response to messages
                         messages_list.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
@@ -556,11 +610,14 @@ def get_bot_response(session_id: int, db: Session) -> str:
                             })
                         })
             
+            # Get GPT's final response after tool execution
             tool_result_summary = ""
             for tool_call in message.tool_calls:
                 try:
                     function_args = json.loads(tool_call.function.arguments)
+                    # Get the validation result we already computed
                     for msg in messages_list:
+                        # msg is a dict, so we can use .get()
                         if isinstance(msg, dict) and msg.get("role") == "tool" and msg.get("tool_call_id") == tool_call.id:
                             validation_result = json.loads(msg.get("content", "{}"))
                             
@@ -578,6 +635,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
                                 vehicle_desc = f"{year} {make} {body_type}"
                                 
                                 if validation_result.get("valid"):
+                                    # Extract year, make, and body_type for the extracted value
                                     extracted_value = f"{year} {make} {body_type}"
                                     tool_result_summary += f"The vehicle {vehicle_desc} is VALID. Set valid: true and extracted: '{extracted_value}'. "
                                 else:
@@ -594,6 +652,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
                     elif tool_call.function.name == "validate_vehicle_info":
                         tool_result_summary += "Error validating vehicle information. Set valid: false and extracted: 'none'. "
             
+            # Add instruction to return JSON after tool call
             messages_list.append({
                 "role": "system",
                 "content": f"Based on the tool result: {tool_result_summary} Now respond in valid JSON format. Use double quoted keys and values. Exact format: {{\"content\": \"<your reply>\", \"valid\": true|false, \"extracted\": \"<the data you extracted from the content if valid, if not, then none>\"}}"
@@ -603,7 +662,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
                 model="gpt-4o-mini",
                 messages=messages_list,
                 tools=tools,
-                tool_choice="none" 
+                tool_choice="none"
             )
             
             message = completion.choices[0].message
@@ -614,7 +673,6 @@ def get_bot_response(session_id: int, db: Session) -> str:
                 "extracted": "none"
             })
     
-    # Ensure we have content
     if not message.content:
         return json.dumps({
             "content": "I apologize, but I encountered an error processing your request. Please try again.",
@@ -622,6 +680,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
             "extracted": "none"
         })
     
+    # Try to parse the response to ensure it's valid JSON
     try:
         content_stripped = message.content.strip()
         if content_stripped.startswith("```"):
@@ -632,8 +691,9 @@ def get_bot_response(session_id: int, db: Session) -> str:
         json.loads(content_stripped)  # Validate it's JSON
         return message.content
     except json.JSONDecodeError:
+        # Return a fallback JSON response
         return json.dumps({
-            "content": "Error while processing your request. Please try again.",
+            "content": "I apologize, but I encountered an error processing your request. Please try again.",
             "valid": False,
             "extracted": "none"
         })

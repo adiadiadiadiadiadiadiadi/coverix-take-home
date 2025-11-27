@@ -39,30 +39,6 @@ function App() {
 
   return (
     <div className="App">
-      <button 
-        className="new-chat-button" 
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          handleNewChat();
-        }}
-      >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 16 16"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <path
-            d="M8 3.5V12.5M3.5 8H12.5"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
       <Routes>
         <Route
           path="/new"
@@ -79,6 +55,8 @@ function App() {
               inputRef={inputRef}
               message={message}
               setMessage={setMessage}
+              isWaitingForBot={isWaitingForBot}
+              handleSend={() => {}} // Not used - SessionChat has its own handleSend
             />
           }
         />
@@ -86,8 +64,39 @@ function App() {
           path="/"
           element={
             <div className="chat-container">
-              <div style={{ padding: '2rem', textAlign: 'center' }}>
-                <p>Select a conversation or create a new chat to get started.</p>
+              <button 
+                className="new-chat-button home-page-button" 
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleNewChat();
+                }}
+                title="New Chat"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M8 3.5V12.5M3.5 8H12.5"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              <div style={{ padding: '2rem', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '1rem' }}>
+                <p 
+                  className="click-to-start-text"
+                  onClick={handleNewChat}
+                  style={{ cursor: 'pointer', color: '#ffffff', fontSize: '18px', margin: 0 }}
+                >
+                  Click to get started
+                </p>
               </div>
             </div>
           }

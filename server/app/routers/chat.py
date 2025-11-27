@@ -96,25 +96,18 @@ def add_bot_message(
     db: Session = Depends(get_db),
 ):
     session = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
+    if session:
+        db.refresh(session)
     
     if session and session.license_status and session.current_step == ChatStep.license_status:
         pass
+    
     if session and session.current_step in [ChatStep.license_type, ChatStep.license_status]:
         pass
     
-    if session and session.current_step == ChatStep.vehicles and session.vehicle_step is None:
-        existing_vehicles = db.query(Vehicle).filter(Vehicle.session_id == session_id).count()
-        if existing_vehicles > 0:
-            last_user_msg = db.query(Message).filter(
-                Message.session_id == session_id,
-                Message.sender == Sender.user
-            ).order_by(Message.message_id.desc()).first()
-            if last_user_msg:
-                user_content_lower = last_user_msg.content.lower().strip()
-                if user_content_lower in ["no", "n", "nah", "nope"] or (user_content_lower.startswith("no") and "yes" not in user_content_lower):
-                    session_service.save(session_id, db, "current_step", ChatStep.license_type)
-                    session_service.save(session_id, db, "vehicle_step", None)
-                    return add_bot_message(session_id, db)
+    session = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
+    if session:
+        db.refresh(session)
     
     try:
         content = message_service.get_bot_response(session_id, db)
@@ -149,35 +142,7 @@ def add_bot_message(
         valid = parsed.get("valid")
         
         if session and session.current_step == ChatStep.vehicles and session.vehicle_step is None:
-            all_bot_messages = db.query(Message).filter(
-                Message.session_id == session_id,
-                Message.sender == Sender.bot
-            ).order_by(Message.message_id).all()
-            
-            user_answered_yes = False
-            
-            for bot_msg in all_bot_messages:
-                content_lower = bot_msg.content.lower()
-                if "add a vehicle" in content_lower or "would you like to add" in content_lower:
-                    user_msgs_after = db.query(Message).filter(
-                        Message.session_id == session_id,
-                        Message.sender == Sender.user,
-                        Message.message_id > bot_msg.message_id
-                    ).order_by(Message.message_id).all()
-                    
-                    for user_msg in user_msgs_after:
-                        user_content_lower = user_msg.content.lower().strip()
-                        if user_content_lower in ["yes", "y", "yeah", "yea", "sure", "ok", "okay", "yep"] or (user_content_lower.startswith("yes") and "no" not in user_content_lower):
-                            user_answered_yes = True
-                            extracted = "true"
-                            valid = True
-                            session_service.save(session_id, db, "vehicle_step", VehicleStep.vin_or_year_make_body)
-                            return add_bot_message(session_id, db)
-                    if user_answered_yes:
-                        break
-            
-            if not user_answered_yes:
-                last_user_msg = db.query(Message).filter(
+            last_user_msg = db.query(Message).filter(
                 Message.session_id == session_id,
                 Message.sender == Sender.user
             ).order_by(Message.message_id.desc()).first()
@@ -248,25 +213,229 @@ def add_bot_message(
             ).order_by(Message.message_id.desc()).first()
             
             if last_user_msg:
-                user_content = last_user_msg.content
-                import re
-                body_types_list = ['sedan', 'suv', 'truck', 'coupe', 'hatchback', 'wagon', 'van', 'convertible', 'pickup', 'minivan', 'sport']
-                flexible_pattern = r'\b(19\d{2}|20[0-2]\d)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+([A-Za-z]+)'
-                matches = list(re.finditer(flexible_pattern, user_content, re.IGNORECASE))
+                user_content = last_user_msg.content.strip()
                 
-                for match in matches:
-                    year = match.group(1)
-                    make = match.group(2).strip()
-                    body_type = match.group(3).strip()
+                # Check if it's a VIN (17 characters, alphanumeric)
+                if len(user_content) == 17 and user_content.replace("-", "").replace(" ", "").isalnum():
+                    extracted = user_content.replace("-", "").replace(" ", "")
+                    valid = True
+                else:
+                    # Try to extract Year Make BodyType
+                    import re
                     
-                    if body_type.lower() in body_types_list:
-                        extracted = f"{year} {make} {body_type}"
-                        valid = True
-                        break
-                    elif len(user_content.split()) >= 3 and len(body_type) > 2:
-                        extracted = f"{year} {make} {body_type}"
-                        valid = True
-                        break
+                    # Common body types for validation
+                    body_types_list = ['sedan', 'suv', 'truck', 'coupe', 'hatchback', 'wagon', 'van', 'convertible', 'pickup', 'minivan', 'sport']
+                    
+                    # Pattern: year (4 digits) followed by make (one or two words) followed by body type
+                    flexible_pattern = r'\b(19\d{2}|20[0-2]\d)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+([A-Za-z]+)'
+                    matches = list(re.finditer(flexible_pattern, user_content, re.IGNORECASE))
+                    
+                    if matches:
+                        for match in matches:
+                            year = match.group(1)
+                            make = match.group(2).strip()
+                            body_type = match.group(3).strip()
+                            
+                            # If body type is in our list, or if we have at least 3 words, accept it
+                            if body_type.lower() in body_types_list or (len(user_content.split()) >= 3 and len(body_type) > 2):
+                                extracted = f"{year} {make} {body_type}"
+                                valid = True
+                                break
+                    else:
+                        # Fallback: try simple split if pattern doesn't match
+                        parts = user_content.split()
+                        if len(parts) >= 3:
+                            try:
+                                # Check if first part is a year
+                                year_int = int(parts[0])
+                                if 1900 <= year_int <= 2029:
+                                    extracted = user_content
+                                    valid = True
+                            except ValueError:
+                                pass
+        
+        if session and session.current_step == ChatStep.vehicles and session.vehicle_step == VehicleStep.use:
+            last_user_msg = db.query(Message).filter(
+                Message.session_id == session_id,
+                Message.sender == Sender.user
+            ).order_by(Message.message_id.desc()).first()
+            
+            if last_user_msg:
+                user_content_lower = last_user_msg.content.lower().strip()
+                user_content_clean = user_content_lower.rstrip('?.,!').strip()
+                
+                vehicle_use_value = None
+                if user_content_clean in ["commuting", "commercial", "farming", "business"]:
+                    vehicle_use_value = user_content_clean
+                elif user_content_lower.startswith("commuting"):
+                    vehicle_use_value = "commuting"
+                elif user_content_lower.startswith("commercial"):
+                    vehicle_use_value = "commercial"
+                elif user_content_lower.startswith("farming"):
+                    vehicle_use_value = "farming"
+                elif user_content_lower.startswith("business"):
+                    vehicle_use_value = "business"
+                elif "commuting" in user_content_lower and "commercial" not in user_content_lower and "farming" not in user_content_lower and "business" not in user_content_lower:
+                    vehicle_use_value = "commuting"
+                elif "commercial" in user_content_lower and "commuting" not in user_content_lower and "farming" not in user_content_lower and "business" not in user_content_lower:
+                    vehicle_use_value = "commercial"
+                elif "farming" in user_content_lower and "commuting" not in user_content_lower and "commercial" not in user_content_lower and "business" not in user_content_lower:
+                    vehicle_use_value = "farming"
+                elif "business" in user_content_lower and "commuting" not in user_content_lower and "commercial" not in user_content_lower and "farming" not in user_content_lower:
+                    vehicle_use_value = "business"
+                
+                if vehicle_use_value:
+                    vehicle = db.query(Vehicle).filter(
+                        Vehicle.session_id == session_id,
+                        Vehicle.vehicle_use.is_(None)
+                    ).order_by(Vehicle.vehicle_id.desc()).first()
+                    if not vehicle:
+                        vehicle = db.query(Vehicle).filter(Vehicle.session_id == session_id).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = vehicle_service.create_vehicle(db, session_id)
+                    
+                    try:
+                        vehicle_use_enum = VehicleUse(vehicle_use_value)
+                        vehicle_service.save(vehicle.vehicle_id, db, "vehicle_use", vehicle_use_enum)
+                        session_service.save(session_id, db, "vehicle_step", VehicleStep.blind_spot)
+                        return add_bot_message(session_id, db)
+                    except ValueError:
+                        pass
+        
+        if session and session.current_step == ChatStep.vehicles and session.vehicle_step == VehicleStep.commuting_days:
+            last_user_msg = db.query(Message).filter(
+                Message.session_id == session_id,
+                Message.sender == Sender.user
+            ).order_by(Message.message_id.desc()).first()
+            
+            if last_user_msg:
+                user_content = last_user_msg.content.strip()
+                try:
+                    days = int(user_content)
+                    if 1 <= days <= 7:
+                        vehicle = db.query(Vehicle).filter(
+                            Vehicle.session_id == session_id,
+                            Vehicle.vehicle_use == VehicleUse.commuting,
+                            Vehicle.days_per_week.is_(None)
+                        ).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = db.query(Vehicle).filter(
+                                Vehicle.session_id == session_id,
+                                Vehicle.days_per_week.is_(None)
+                            ).order_by(Vehicle.vehicle_id.desc()).first()
+                            if not vehicle:
+                                vehicle = vehicle_service.create_vehicle(db, session_id)
+                        vehicle_service.save(vehicle.vehicle_id, db, "days_per_week", days)
+                        session_service.save(session_id, db, "vehicle_step", VehicleStep.commuting_miles)
+                        db.refresh(session)
+                        return add_bot_message(session_id, db)
+                except ValueError:
+                    pass
+        
+        if session and session.current_step == ChatStep.vehicles and session.vehicle_step == VehicleStep.commuting_miles:
+            # Check if we have a vehicle with days_per_week set but one_way_miles not set
+            vehicle = db.query(Vehicle).filter(
+                Vehicle.session_id == session_id,
+                Vehicle.vehicle_use == VehicleUse.commuting,
+                Vehicle.days_per_week.isnot(None),
+                Vehicle.one_way_miles.is_(None)
+            ).order_by(Vehicle.vehicle_id.desc()).first()
+            
+            if vehicle:
+                # Check if the last bot message was asking about one-way miles
+                # If not, we're in a recursive call right after saving days, so skip processing
+                last_bot_msg = db.query(Message).filter(
+                    Message.session_id == session_id,
+                    Message.sender == Sender.bot
+                ).order_by(Message.message_id.desc()).first()
+                
+                # Only process user message if the last bot message was asking about miles
+                # This prevents processing the same user message twice (once as days, once as miles)
+                if last_bot_msg and ("one-way miles" in last_bot_msg.content.lower() or "one way miles" in last_bot_msg.content.lower() or "miles is your commute" in last_bot_msg.content.lower()):
+                    last_user_msg = db.query(Message).filter(
+                        Message.session_id == session_id,
+                        Message.sender == Sender.user
+                    ).order_by(Message.message_id.desc()).first()
+                    
+                    if last_user_msg:
+                        user_content = last_user_msg.content.strip()
+                        try:
+                            miles = int(user_content)
+                            if miles > 0:
+                                vehicle_service.save(vehicle.vehicle_id, db, "one_way_miles", miles)
+                                session_service.save(session_id, db, "vehicle_step", None)
+                                session_service.save(session_id, db, "current_step", ChatStep.vehicles)
+                                return add_bot_message(session_id, db)
+                        except ValueError:
+                            pass
+        
+        if session and session.current_step == ChatStep.vehicles and session.vehicle_step == VehicleStep.annual_mileage:
+            last_user_msg = db.query(Message).filter(
+                Message.session_id == session_id,
+                Message.sender == Sender.user
+            ).order_by(Message.message_id.desc()).first()
+            
+            if last_user_msg:
+                user_content = last_user_msg.content.strip()
+                try:
+                    mileage = int(user_content)
+                    if mileage > 0:
+                        vehicle = db.query(Vehicle).filter(
+                            Vehicle.session_id == session_id,
+                            Vehicle.vehicle_use.in_([VehicleUse.commercial, VehicleUse.farming, VehicleUse.business]),
+                            Vehicle.annual_mileage.is_(None)
+                        ).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = db.query(Vehicle).filter(
+                                Vehicle.session_id == session_id,
+                                Vehicle.annual_mileage.is_(None)
+                            ).order_by(Vehicle.vehicle_id.desc()).first()
+                            if not vehicle:
+                                vehicle = vehicle_service.create_vehicle(db, session_id)
+                        vehicle_service.save(vehicle.vehicle_id, db, "annual_mileage", mileage)
+                        session_service.save(session_id, db, "vehicle_step", None)
+                        session_service.save(session_id, db, "current_step", ChatStep.vehicles)
+                        return add_bot_message(session_id, db)
+                except ValueError:
+                    pass
+        
+        if session and session.current_step == ChatStep.vehicles and session.vehicle_step == VehicleStep.blind_spot:
+            last_user_msg = db.query(Message).filter(
+                Message.session_id == session_id,
+                Message.sender == Sender.user
+            ).order_by(Message.message_id.desc()).first()
+            
+            if last_user_msg:
+                user_content_lower = last_user_msg.content.lower().strip()
+                
+                blind_spot_value = None
+                if user_content_lower in ["yes", "y", "yeah", "yea", "sure", "ok", "okay", "yep"] or (user_content_lower.startswith("yes") and "no" not in user_content_lower):
+                    blind_spot_value = True
+                elif user_content_lower in ["no", "n", "nah", "nope"] or (user_content_lower.startswith("no") and "yes" not in user_content_lower):
+                    blind_spot_value = False
+                
+                if blind_spot_value is not None:
+                    vehicle = db.query(Vehicle).filter(
+                        Vehicle.session_id == session_id,
+                        Vehicle.vehicle_use.isnot(None),
+                        Vehicle.blind_spot_warning_equipped.is_(None)
+                    ).order_by(Vehicle.vehicle_id.desc()).first()
+                    if not vehicle:
+                        vehicle = db.query(Vehicle).filter(
+                            Vehicle.session_id == session_id,
+                            Vehicle.blind_spot_warning_equipped.is_(None)
+                        ).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = vehicle_service.create_vehicle(db, session_id)
+                    db.refresh(vehicle)
+                    vehicle_service.save(vehicle.vehicle_id, db, "blind_spot_warning_equipped", blind_spot_value)
+                    db.refresh(vehicle)
+                    if vehicle.vehicle_use == VehicleUse.commuting:
+                        session_service.save(session_id, db, "vehicle_step", VehicleStep.commuting_days)
+                    else:
+                        session_service.save(session_id, db, "vehicle_step", VehicleStep.annual_mileage)
+                    return add_bot_message(session_id, db)
+        
         if valid and extracted and extracted != "none" and extracted.strip():
             session = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
             
@@ -364,36 +533,119 @@ def add_bot_message(
             
             if session.current_step == ChatStep.vehicles:
                 if session.vehicle_step is None:
-                    extracted_lower = extracted.lower().strip() if extracted else ""
+                    existing_vehicles = db.query(Vehicle).filter(Vehicle.session_id == session_id).count()
                     
-                    if not valid or extracted_lower not in ["true", "false"]:
-                        last_user_msg = db.query(Message).filter(
+                    if existing_vehicles > 0:
+                        last_bot_msg = db.query(Message).filter(
                             Message.session_id == session_id,
-                            Message.sender == Sender.user
+                            Message.sender == Sender.bot
                         ).order_by(Message.message_id.desc()).first()
                         
-                        if last_user_msg:
-                            user_content_lower = last_user_msg.content.lower().strip()
+                        if last_bot_msg and ("add another vehicle" in last_bot_msg.content.lower() or "add a vehicle" in last_bot_msg.content.lower()):
+                            extracted_lower = extracted.lower().strip() if extracted else ""
                             
-                            if user_content_lower in ["no", "n", "nah", "nope"] or (user_content_lower.startswith("no") and "yes" not in user_content_lower):
-                                extracted_lower = "false"
-                                valid = True
-                            elif user_content_lower in ["yes", "y", "yeah", "yea", "sure", "ok", "okay", "yep"] or (user_content_lower.startswith("yes") and "no" not in user_content_lower):
-                                extracted_lower = "true"
-                                valid = True
-                    
-                    if extracted_lower == "true" and valid:
-                        session_service.save(session_id, db, "vehicle_step", VehicleStep.vin_or_year_make_body)
-                        return add_bot_message(session_id, db)
-                    elif extracted_lower == "false" and valid:
-                        existing_vehicles = db.query(Vehicle).filter(Vehicle.session_id == session_id).count()
-                        session_service.save(session_id, db, "current_step", ChatStep.license_type)
-                        session_service.save(session_id, db, "vehicle_step", None)
-                        return add_bot_message(session_id, db)
+                            if not valid or extracted_lower not in ["true", "false"]:
+                                last_user_msg = db.query(Message).filter(
+                                    Message.session_id == session_id,
+                                    Message.sender == Sender.user
+                                ).order_by(Message.message_id.desc()).first()
+                                
+                                if last_user_msg:
+                                    user_content_lower = last_user_msg.content.lower().strip()
+                                    
+                                    if user_content_lower in ["no", "n", "nah", "nope"] or (user_content_lower.startswith("no") and "yes" not in user_content_lower):
+                                        extracted_lower = "false"
+                                        valid = True
+                                    elif user_content_lower in ["yes", "y", "yeah", "yea", "sure", "ok", "okay", "yep"] or (user_content_lower.startswith("yes") and "no" not in user_content_lower):
+                                        extracted_lower = "true"
+                                        valid = True
+                            
+                            if extracted_lower == "true" and valid:
+                                session_service.save(session_id, db, "vehicle_step", VehicleStep.vin_or_year_make_body)
+                                return add_bot_message(session_id, db)
+                            elif extracted_lower == "false" and valid:
+                                session_service.save(session_id, db, "current_step", ChatStep.license_type)
+                                session_service.save(session_id, db, "vehicle_step", None)
+                                return add_bot_message(session_id, db)
+                    else:
+                        extracted_lower = extracted.lower().strip() if extracted else ""
+                        
+                        if not valid or extracted_lower not in ["true", "false"]:
+                            last_user_msg = db.query(Message).filter(
+                                Message.session_id == session_id,
+                                Message.sender == Sender.user
+                            ).order_by(Message.message_id.desc()).first()
+                            
+                            if last_user_msg:
+                                user_content_lower = last_user_msg.content.lower().strip()
+                                
+                                if user_content_lower in ["no", "n", "nah", "nope"] or (user_content_lower.startswith("no") and "yes" not in user_content_lower):
+                                    extracted_lower = "false"
+                                    valid = True
+                                elif user_content_lower in ["yes", "y", "yeah", "yea", "sure", "ok", "okay", "yep"] or (user_content_lower.startswith("yes") and "no" not in user_content_lower):
+                                    extracted_lower = "true"
+                                    valid = True
+                        
+                        if extracted_lower == "true" and valid:
+                            session_service.save(session_id, db, "vehicle_step", VehicleStep.vin_or_year_make_body)
+                            return add_bot_message(session_id, db)
+                        elif extracted_lower == "false" and valid:
+                            existing_vehicles = db.query(Vehicle).filter(Vehicle.session_id == session_id).count()
+                            session_service.save(session_id, db, "current_step", ChatStep.license_type)
+                            session_service.save(session_id, db, "vehicle_step", None)
+                            return add_bot_message(session_id, db)
                 elif session.vehicle_step:
-                    vehicle = db.query(Vehicle).filter(Vehicle.session_id == session_id).order_by(Vehicle.vehicle_id.desc()).first()
-                    if not vehicle:
-                        vehicle = vehicle_service.create_vehicle(db, session_id)
+                    if session.vehicle_step == VehicleStep.vin_or_year_make_body:
+                        vehicle = db.query(Vehicle).filter(
+                            Vehicle.session_id == session_id,
+                            Vehicle.vehicle_use.is_(None)
+                        ).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = db.query(Vehicle).filter(Vehicle.session_id == session_id).order_by(Vehicle.vehicle_id.desc()).first()
+                            if vehicle and vehicle.vehicle_use and vehicle.blind_spot_warning_equipped is not None:
+                                vehicle = vehicle_service.create_vehicle(db, session_id)
+                            elif not vehicle:
+                                vehicle = vehicle_service.create_vehicle(db, session_id)
+                    elif session.vehicle_step == VehicleStep.commuting_days:
+                        vehicle = db.query(Vehicle).filter(
+                            Vehicle.session_id == session_id,
+                            Vehicle.days_per_week.is_(None)
+                        ).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = db.query(Vehicle).filter(Vehicle.session_id == session_id).order_by(Vehicle.vehicle_id.desc()).first()
+                            if not vehicle:
+                                vehicle = vehicle_service.create_vehicle(db, session_id)
+                    elif session.vehicle_step == VehicleStep.commuting_miles:
+                        vehicle = db.query(Vehicle).filter(
+                            Vehicle.session_id == session_id,
+                            Vehicle.one_way_miles.is_(None)
+                        ).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = db.query(Vehicle).filter(Vehicle.session_id == session_id).order_by(Vehicle.vehicle_id.desc()).first()
+                            if not vehicle:
+                                vehicle = vehicle_service.create_vehicle(db, session_id)
+                    elif session.vehicle_step == VehicleStep.annual_mileage:
+                        vehicle = db.query(Vehicle).filter(
+                            Vehicle.session_id == session_id,
+                            Vehicle.annual_mileage.is_(None)
+                        ).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = db.query(Vehicle).filter(Vehicle.session_id == session_id).order_by(Vehicle.vehicle_id.desc()).first()
+                            if not vehicle:
+                                vehicle = vehicle_service.create_vehicle(db, session_id)
+                    elif session.vehicle_step == VehicleStep.blind_spot:
+                        vehicle = db.query(Vehicle).filter(
+                            Vehicle.session_id == session_id,
+                            Vehicle.blind_spot_warning_equipped.is_(None)
+                        ).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = db.query(Vehicle).filter(Vehicle.session_id == session_id).order_by(Vehicle.vehicle_id.desc()).first()
+                            if not vehicle:
+                                vehicle = vehicle_service.create_vehicle(db, session_id)
+                    else:
+                        vehicle = db.query(Vehicle).filter(Vehicle.session_id == session_id).order_by(Vehicle.vehicle_id.desc()).first()
+                        if not vehicle:
+                            vehicle = vehicle_service.create_vehicle(db, session_id)
                     
                     if session.vehicle_step == VehicleStep.vin_or_year_make_body:
                         if len(extracted) == 17 and extracted.replace("-", "").replace(" ", "").isalnum():
@@ -410,29 +662,7 @@ def add_bot_message(
                                 except Exception:
                                     pass
                         session_service.save(session_id, db, "vehicle_step", VehicleStep.use)
-                    elif session.vehicle_step == VehicleStep.use:
-                        try:
-                            vehicle_use_enum = VehicleUse(extracted.lower().strip())
-                            vehicle_service.save(vehicle.vehicle_id, db, "vehicle_use", vehicle_use_enum)
-                            if extracted.lower().strip() == "commuting":
-                                session_service.save(session_id, db, "vehicle_step", VehicleStep.commuting_days)
-                            else:
-                                session_service.save(session_id, db, "vehicle_step", VehicleStep.annual_mileage)
-                        except ValueError:
-                            pass
-                    elif session.vehicle_step == VehicleStep.blind_spot:
-                        vehicle_service.save(vehicle.vehicle_id, db, "blind_spot_warning_equipped", extracted.lower().strip() == "true")
-                        session_service.save(session_id, db, "vehicle_step", None)
-                        session_service.save(session_id, db, "current_step", ChatStep.vehicles)
-                    elif session.vehicle_step == VehicleStep.commuting_days:
-                        vehicle_service.save(vehicle.vehicle_id, db, "days_per_week", int(extracted))
-                        session_service.save(session_id, db, "vehicle_step", VehicleStep.commuting_miles)
-                    elif session.vehicle_step == VehicleStep.commuting_miles:
-                        vehicle_service.save(vehicle.vehicle_id, db, "one_way_miles", int(extracted))
-                        session_service.save(session_id, db, "vehicle_step", VehicleStep.blind_spot)
-                    elif session.vehicle_step == VehicleStep.annual_mileage:
-                        vehicle_service.save(vehicle.vehicle_id, db, "annual_mileage", int(extracted))
-                        session_service.save(session_id, db, "vehicle_step", VehicleStep.blind_spot)
+                        return add_bot_message(session_id, db)
     except Exception:
         pass
     

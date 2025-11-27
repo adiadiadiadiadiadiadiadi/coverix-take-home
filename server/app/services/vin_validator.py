@@ -2,6 +2,22 @@ import requests
 from typing import Dict, Optional
 
 def validate_vehicle_info(year: int, make: str, body_type: str) -> Dict[str, any]:
+    """
+    Validates vehicle information (year, make, body type) against NHTSA API.
+    
+    Args:
+        year: Vehicle year
+        make: Vehicle make (e.g., "Ford", "Toyota")
+        body_type: Vehicle body type (required, e.g., "Sedan", "SUV", "Truck")
+        
+    Returns:
+        Dictionary with:
+        - valid: bool - Whether the vehicle info is valid
+        - error: str - Error message (if invalid)
+        - make: str - Validated make
+        - body_type: str - Validated body type
+        - year: str - Validated year
+    """
     try:
         url = f"https://vpic.nhtsa.dot.gov/api/vehicles/GetAllMakes?format=json"
         response = requests.get(url, timeout=5)
@@ -16,9 +32,11 @@ def validate_vehicle_info(year: int, make: str, body_type: str) -> Dict[str, any
         makes = data.get("Results", [])
         
         make_found = None
+        make_id = None
         for m in makes:
             if m.get("Make_Name", "").lower() == make.lower():
                 make_found = m.get("Make_Name")
+                make_id = m.get("Make_ID")
                 break
         
         if not make_found:

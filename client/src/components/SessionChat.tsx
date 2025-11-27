@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { TypingIndicator } from '@chatscope/chat-ui-kit-react';
 
 interface ChatMessage {
@@ -13,14 +13,19 @@ export interface SessionChatProps {
   inputRef: React.RefObject<HTMLInputElement>;
   message: string;
   setMessage: React.Dispatch<React.SetStateAction<string>>;
+  isWaitingForBot: boolean;
+  handleSend: () => void;
 }
 
 const SessionChat: React.FC<SessionChatProps> = ({
   inputRef,
   message,
-  setMessage
+  setMessage,
+  isWaitingForBot,
+  handleSend: _handleSend,
 }) => {
   const { sessionId } = useParams<{ sessionId: string }>();
+  const navigate = useNavigate();
   const [isWaitingForResponse, setIsWaitingForResponse] = useState(true);
   const [messagesList, setMessagesList] = useState<ChatMessage[]>([]);
   const [showTyping, setShowTyping] = useState(false);
@@ -106,15 +111,19 @@ const SessionChat: React.FC<SessionChatProps> = ({
       if (parsed && typeof parsed === 'object') {
         return parsed.content ?? msg.content;
       }
-    } catch (_) {}
+    } catch (_) {
+      // fall back to raw message content if JSON parse fails
+    }
     return msg.content;
   };
 
+  // Check if conversation is complete (last bot message is about connecting to an agent)
   const isComplete = React.useMemo(() => {
     if (messagesList.length === 0) return false;
     const lastMessage = messagesList[messagesList.length - 1];
     if (lastMessage.sender === 'bot') {
       const content = safeMessageContent(lastMessage).toLowerCase();
+      // Check for both completion message and frustration/agent connection messages
       return content.includes('connecting you to an agent') || 
              content.includes("connecting you to a human agent") ||
              content.includes("i'm connecting you to") ||
@@ -126,6 +135,7 @@ const SessionChat: React.FC<SessionChatProps> = ({
     return false;
   }, [messagesList]);
 
+  // Clear message when conversation is complete
   useEffect(() => {
     if (isComplete) {
       setMessage('');
@@ -205,6 +215,29 @@ const SessionChat: React.FC<SessionChatProps> = ({
 
   const isInputDisabled = isWaitingForResponse || showTyping || isComplete;
 
+  const handleNewChat = async () => {
+    setMessage('');
+
+    try {
+      const response = await fetch('http://localhost:8000/chat/new', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('chat could not be created. try again later.');
+      }
+
+      const newSessionId = await response.json();
+      navigate(`/session/${newSessionId}`, { replace: true });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      alert(`Failed to create new chat: ${errorMessage}`);
+    }
+  };
+
   // Auto-scroll to bottom when messages change
   useEffect(() => {
     if (messagesEndRef.current) {
@@ -246,6 +279,31 @@ const SessionChat: React.FC<SessionChatProps> = ({
         <div ref={messagesEndRef} />
       </div>
       <div className="input-container">
+        <button 
+          className="new-chat-button" 
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            handleNewChat();
+          }}
+          title="New Chat"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M8 3.5V12.5M3.5 8H12.5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
         <input
           ref={inputRef}
           type="text"
