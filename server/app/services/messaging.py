@@ -60,7 +60,7 @@ GET_INSPIRATIONAL_QUOTE_TOOL = {
     "type": "function",
     "function": {
         "name": "get_inspirational_quote",
-        "description": "Fetches an inspirational quote to help calm or motivate the user. ONLY use this tool when the user EXPLICITLY says they want to talk to a human/agent (e.g., 'I want to talk to a human', 'connect me to an agent'), EXPLICITLY expresses frustration/anger (e.g., 'I'm frustrated', 'this is frustrating'), or EXPLICITLY asks to skip/stop (e.g., 'skip this', 'stop', 'I don't want to continue'). DO NOT use this for: normal answers (yes/no/personal/valid), repeated answers, providing information you asked for, or clarifying questions. This tool will provide a quote that you can share with the user along with a message about connecting them to an agent.",
+        "description": "Fetches an inspirational quote to help calm or motivate the user. ONLY use this tool when the user EXPLICITLY says they want to talk to a human/agent (e.g., 'I want to talk to a human', 'connect me to an agent'), EXPLICITLY expresses frustration/anger (e.g., 'I'm frustrated', 'im frustrated', 'i'm frustrated', 'im frustrated with you', 'this is frustrating', 'I'm angry', 'im angry'), or EXPLICITLY asks to skip/stop (e.g., 'skip this', 'stop', 'I don't want to continue'). DO NOT use this for: normal answers (yes/no/personal/valid), repeated answers, providing information you asked for, or clarifying questions. This tool will provide a quote that you can share with the user along with a message about connecting them to an agent.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -102,35 +102,31 @@ def get_bot_response(session_id: int, db: Session) -> str:
         - Be lenient with typos and variations! If the user's intent is clear despite minor spelling errors, accept it and extract as what was expected.
         - When asking questions, always provide the available options in your response. For example, "Please choose: option1, option2, or option3".
         
-        FRUSTRATION DETECTION - EXTREMELY STRICT - ALMOST NEVER USE THE TOOL:
+        FRUSTRATION DETECTION - STRICT CONDITIONS:
         
-        The get_inspirational_quote tool should ONLY be used when the user EXPLICITLY and UNAMBIGUOUSLY requests human assistance using VERY SPECIFIC phrases.
+        FIRST, check if the user's message indicates frustration or a request for human assistance. The conditions are STRICT - only use the tool for clear, unambiguous cases.
         
-        ONLY use the tool if the user message contains ONE of these EXACT phrases (word-for-word or very close):
-          1. "I want to talk to a human" or "I want to speak to a human" or "I want to talk to a person" or "I want to speak to a person"
-          2. "connect me to an agent" or "connect me to a human" or "I need to speak to an agent" or "I need to speak to a human"
-          3. "I'm done" or "I'm finished" or "stop this" or "cancel this" (ONLY if it's a complete sentence, not part of answering a question)
+        USE the get_inspirational_quote tool ONLY if the user message clearly and unambiguously contains:
+          1. Explicit request for human/agent: "I want to talk to a human", "I want to speak to a human", "connect me to an agent", "I need to speak to a human" (with or without apostrophes: "im" = "I'm")
+          2. Clear frustration expression: "I'm frustrated", "im frustrated", "i'm frustrated", "im frustrated with you", "I'm frustrated with you", "this is frustrating", "I'm angry", "im angry" (account for variations like "im" vs "I'm")
+          3. Request to stop: "I'm done", "im done", "stop this", "cancel this", "I don't want to continue" (ONLY if it's clearly a request to stop, not an answer to a question)
         
-        ABSOLUTELY DO NOT use the tool for:
-          * ANY vehicle information (VIN, year, make, model, body type, "2022 toyota sedan", etc.) - these are ANSWERS, NOT frustration
-          * ANY names, emails, zip codes, numbers, yes/no responses
-          * ANY answers to your questions (personal/commercial, valid/suspended, commuting days, miles, etc.)
-          * ANY message that looks like it's providing information you asked for
-          * ANY message that could be an answer to your current question
-          * Typos, misspellings, or unclear responses - these are still answers
+        STRICT RULES - DO NOT use the tool for:
+          * ANY vehicle information (VIN, year, make, model, body type, "2022 toyota sedan", etc.) - these are ANSWERS
+          * ANY names, emails, zip codes, numbers, yes/no responses - these are ANSWERS
+          * ANY answers to your questions (personal/commercial, valid/suspended, commuting days, miles, etc.) - these are ANSWERS
+          * ANY message that provides information you asked for - this is an ANSWER
+          * Typos, misspellings, or unclear responses that could be answers - treat as ANSWERS
           * Questions like "what do you mean?" - these are clarifying questions, NOT frustration
-          * ANYTHING that could reasonably be interpreted as answering your question
         
-        CRITICAL RULES - READ CAREFULLY:
-        - If the user is providing ANY information (vehicle details, names, numbers, etc.), they are ANSWERING your question, NOT asking for a human
-        - Vehicle information like "2022 toyota sedan" is an ANSWER to "Please provide VIN or Year/Make/Body Type" - DO NOT use the tool
-        - If there's ANY doubt, DO NOT use the tool - just treat it as an answer to your question
-        - The tool should ONLY be used when the user EXPLICITLY says they want to talk to a human agent
-        - When in doubt, ALWAYS assume they're answering your question
-        - It's MUCH better to miss a frustration case than to incorrectly treat normal answers as frustration
+        CRITICAL: If the message could reasonably be interpreted as answering your question, treat it as an ANSWER, NOT frustration.
+        
+        PROCESSING FLOW:
+        1. Check if the message is clearly frustration/request for human (using strict conditions above)
+        2. If YES → Use the get_inspirational_quote tool, then acknowledge and connect to agent. Set valid: true, extracted: "connect_to_agent"
+        3. If NO → Process the message normally as an answer to your current question (validate and extract as usual)
         
         After using the tool, acknowledge their request, share the inspirational quote, and let them know you're connecting them to an agent.
-        Set valid: true, extracted: "connect_to_agent" when this happens.
 
         Past 15 Messages (in chronological order, oldest first):
 
