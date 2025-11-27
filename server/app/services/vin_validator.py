@@ -2,22 +2,6 @@ import requests
 from typing import Dict, Optional
 
 def validate_vehicle_info(year: int, make: str, body_type: str) -> Dict[str, any]:
-    """
-    Validates vehicle information (year, make, body type) against NHTSA API.
-    
-    Args:
-        year: Vehicle year
-        make: Vehicle make (e.g., "Ford", "Toyota")
-        body_type: Vehicle body type (required, e.g., "Sedan", "SUV", "Truck")
-        
-    Returns:
-        Dictionary with:
-        - valid: bool - Whether the vehicle info is valid
-        - error: str - Error message (if invalid)
-        - make: str - Validated make
-        - body_type: str - Validated body type
-        - year: str - Validated year
-    """
     try:
         url = f"https://vpic.nhtsa.dot.gov/api/vehicles/GetAllMakes?format=json"
         response = requests.get(url, timeout=5)
@@ -25,7 +9,7 @@ def validate_vehicle_info(year: int, make: str, body_type: str) -> Dict[str, any
         if response.status_code != 200:
             return {
                 "valid": False,
-                "error": "Unable to validate vehicle information at this time. Please try again later."
+                "error": "Unable to validate."
             }
         
         data = response.json()
@@ -70,7 +54,7 @@ def validate_vehicle_info(year: int, make: str, body_type: str) -> Dict[str, any
 def validate_vin(vin: str) -> Dict[str, any]:
     vin = vin.strip().upper()
 
-    if len(vin) != 17:
+    if len(vin) != 17: # check length of vin
         return {
             "valid": False,
             "error": f"VIN must be exactly 17 characters."
@@ -83,7 +67,7 @@ def validate_vin(vin: str) -> Dict[str, any]:
         if response.status_code != 200:
             return {
                 "valid": False,
-                "error": "Unable to validate VIN at this time. Please try again later."
+                "error": "Unable to validate VIN."
             }
         
         data = response.json()

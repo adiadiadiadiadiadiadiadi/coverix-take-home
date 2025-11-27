@@ -9,7 +9,7 @@ from sqlalchemy import and_
 import json
 import requests
 
-# Define the VIN validation tool for GPT
+# open ai vin toolcall
 VIN_VALIDATION_TOOL = {
     "type": "function",
     "function": {
@@ -28,7 +28,7 @@ VIN_VALIDATION_TOOL = {
     }
 }
 
-# Define the vehicle info validation tool for GPT
+# open ai vehicle toolcall
 VEHICLE_INFO_VALIDATION_TOOL = {
     "type": "function",
     "function": {
@@ -55,7 +55,7 @@ VEHICLE_INFO_VALIDATION_TOOL = {
     }
 }
 
-# Define the inspirational quote tool for GPT
+# inspirational quote toolcall
 GET_INSPIRATIONAL_QUOTE_TOOL = {
     "type": "function",
     "function": {
@@ -70,31 +70,12 @@ GET_INSPIRATIONAL_QUOTE_TOOL = {
 }
 
 def get_bot_response(session_id: int, db: Session) -> str:
+    # get last 15 messages (context)
     messages = db.query(Message).filter(Message.session_id == session_id).order_by(Message.message_id.desc()).limit(15).all()    
     session = db.query(SessionModel).filter(SessionModel.session_id == session_id).first()
-    # Refresh session to ensure we have the latest state
     db.refresh(session)
     current_step = session.current_step
     vehicle_step = session.vehicle_step
-    
-    # Safety check: if we're at license_status but license_type is not set, something is wrong
-    from app.enums.chat_step import ChatStep
-    if current_step == ChatStep.license_status and not session.license_type:
-        # Fall back to license_type step
-        current_step = ChatStep.license_type
-        session.current_step = ChatStep.license_type
-        db.commit()
-        db.refresh(session)
-    
-    # Safety check: if we're at license_type but we already have license_type, move to license_status
-    if current_step == ChatStep.license_type and session.license_type:
-        current_step = ChatStep.license_status
-        session.current_step = ChatStep.license_status
-        db.commit()
-        db.refresh(session)
-    
-    # Update current_step variable after potential changes
-    current_step = session.current_step
 
     prompt = """
         You are an insurance agent bot gathering information from the user. You do NOT have a name.
@@ -191,8 +172,8 @@ def get_bot_response(session_id: int, db: Session) -> str:
         case "email":
             prompt += """
             Current step: EMAIL. Validate the LAST user message. if it's a valid email address, 
-            set valid: true and extracted: the email. If valid, acknowledge and ask if they would
-            like to add a vehicle. 
+            set valid: true and extracted: the email. If valid, ask: 'Would you like to add a vehicle? Please respond with yes or no.'
+            DO NOT add extra text or acknowledgments. Just ask the question directly.
             If invalid, set valid: false and ask for a valid email address.
             """
         case "license_type":
@@ -215,9 +196,7 @@ def get_bot_response(session_id: int, db: Session) -> str:
             REMEMBER: We are past the vehicle step. DO NOT mention vehicles, VIN, or vehicle information in your response.
             DO NOT backtrack to vehicle questions."""
         case "license_status":
-            # Check if license_status is already set - if so, generate completion message
             if session.license_status:
-                # License status is already collected - generate completion message
                 session_summary_parts = []
                 if session.zip_code:
                     session_summary_parts.append(f"Zip Code: {session.zip_code}")
@@ -259,8 +238,6 @@ def get_bot_response(session_id: int, db: Session) -> str:
                 Format the summary section with each field on its own line (Zip Code on one line, Full Name on the next line, etc.)
                 """
             else:
-                # License status not yet collected - ask for it
-                # Get session summary to include in prompt
                 session_summary_parts = []
                 if session.zip_code:
                     session_summary_parts.append(f"Zip Code: {session.zip_code}")
@@ -270,7 +247,6 @@ def get_bot_response(session_id: int, db: Session) -> str:
                     session_summary_parts.append(f"Email: {session.email}")
                 if session.license_type:
                     session_summary_parts.append(f"License Type: {session.license_type.value}")
-                # License status will be added after validation
                 
                 from app.models.vehicle import Vehicle
                 vehicles = db.query(Vehicle).filter(Vehicle.session_id == session_id).all()
@@ -279,7 +255,6 @@ def get_bot_response(session_id: int, db: Session) -> str:
                 
                 session_summary = "\n".join(session_summary_parts) if session_summary_parts else "No additional information collected."
                 
-                # Build what's already been collected
                 collected_info = []
                 if session.zip_code:
                     collected_info.append(f"✓ Zip Code: {session.zip_code}")
@@ -552,15 +527,8 @@ def get_bot_response(session_id: int, db: Session) -> str:
                             "tool_call_id": tool_call.id,
                             "content": json.dumps(validation_result)
                         })
-                    except Exception:
-                        messages_list.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": json.dumps({
-                                "valid": False,
-                                "error": f"Error validating vehicle information: {str(e)}"
-                            })
-                        })
+                    except Exception as e:
+                        print(e)
                 elif function_name == "get_inspirational_quote":
                     try:
                         response = requests.get("https://zenquotes.io?api=quotes", timeout=5)
@@ -568,7 +536,6 @@ def get_bot_response(session_id: int, db: Session) -> str:
                         if response.status_code == 200:
                             quotes_data = response.json()
                             if quotes_data and len(quotes_data) > 0:
-                                # Get the first quote
                                 quote = quotes_data[0]
                                 quote_text = quote.get("q", "")
                                 quote_author = quote.get("a", "Unknown")
@@ -592,32 +559,19 @@ def get_bot_response(session_id: int, db: Session) -> str:
                                 "note": "API error, fallback quote used"
                             }
                         
-                        # Add tool response to messages
                         messages_list.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "content": json.dumps(quote_result)
                         })
-                    except Exception:
-                        messages_list.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": json.dumps({
-                                "quote": "The greatest mistake you can make in life is to be continually fearing you will make one.",
-                                "author": "Elbert Hubbard",
-                                "success": False,
-                                "error": str(e)
-                            })
-                        })
+                    except Exception as e:
+                        print(e)
             
-            # Get GPT's final response after tool execution
             tool_result_summary = ""
             for tool_call in message.tool_calls:
                 try:
                     function_args = json.loads(tool_call.function.arguments)
-                    # Get the validation result we already computed
                     for msg in messages_list:
-                        # msg is a dict, so we can use .get()
                         if isinstance(msg, dict) and msg.get("role") == "tool" and msg.get("tool_call_id") == tool_call.id:
                             validation_result = json.loads(msg.get("content", "{}"))
                             
@@ -635,7 +589,6 @@ def get_bot_response(session_id: int, db: Session) -> str:
                                 vehicle_desc = f"{year} {make} {body_type}"
                                 
                                 if validation_result.get("valid"):
-                                    # Extract year, make, and body_type for the extracted value
                                     extracted_value = f"{year} {make} {body_type}"
                                     tool_result_summary += f"The vehicle {vehicle_desc} is VALID. Set valid: true and extracted: '{extracted_value}'. "
                                 else:
@@ -652,10 +605,9 @@ def get_bot_response(session_id: int, db: Session) -> str:
                     elif tool_call.function.name == "validate_vehicle_info":
                         tool_result_summary += "Error validating vehicle information. Set valid: false and extracted: 'none'. "
             
-            # Add instruction to return JSON after tool call
             messages_list.append({
                 "role": "system",
-                "content": f"Based on the tool result: {tool_result_summary} Now respond in valid JSON format. Use double quoted keys and values. Exact format: {{\"content\": \"<your reply>\", \"valid\": true|false, \"extracted\": \"<the data you extracted from the content if valid, if not, then none>\"}}"
+                "content": f"Based on the tool result: {tool_result_summary}, respond in valid JSON format. Use double quoted keys and values. Exact format: {{\"content\": \"<your reply>\", \"valid\": true|false, \"extracted\": \"<the data you extracted from the content if valid, if not, then none>\"}}"
             })
             
             completion = client.chat.completions.create(
@@ -680,18 +632,16 @@ def get_bot_response(session_id: int, db: Session) -> str:
             "extracted": "none"
         })
     
-    # Try to parse the response to ensure it's valid JSON
-    try:
+    try: # normalize api output
         content_stripped = message.content.strip()
         if content_stripped.startswith("```"):
             content_stripped = content_stripped.split("```")[1]
             if content_stripped.startswith("json"):
                 content_stripped = content_stripped[4:]
         content_stripped = content_stripped.strip()
-        json.loads(content_stripped)  # Validate it's JSON
+        json.loads(content_stripped)
         return message.content
-    except json.JSONDecodeError:
-        # Return a fallback JSON response
+    except Exception as e:
         return json.dumps({
             "content": "I apologize, but I encountered an error processing your request. Please try again.",
             "valid": False,
